@@ -1,0 +1,251 @@
+metadata:
+  id: ADR-007
+  title: "Kernel Architecture — Gate State Machine and Execution Model"
+  status: ACCEPTED
+  date: "2026-03-15"
+  author: "Ryan // ry-ops.dev"
+  supersedes: null
+  superseded_by: null
+  affects:
+    - taem-dev/taem
+    - taem-dev/mc-state
+
+context: |
+  ADR-004 established git-first architecture with GitHub Actions as the
+  runtime. The design review identified a critical conflation: GitHub Actions
+  was doing two different things simultaneously — enforcing the gate protocol
+  (needs: graph) and running the assessment logic (job steps). These are
+  different concerns with different requirements.
+
+  The gate protocol needs to be: local, fast, deterministic, network-independent,
+  auditable. It is pure logic — "did all Phase N controllers emit GO before
+  Phase N+1 starts?" This should run in microseconds with no network calls.
+
+  The assessment logic needs to be: parallel where safe, optionally distributed,
+  able to call external services (repos, Qdrant, Ollama, Anthropic), and
+  replaceable per-controller without changing the gate protocol.
+
+  Fusing these into GitHub Actions YAML means: you cannot run the gate protocol
+  locally, you cannot test individual controllers in isolation, you cannot run
+  a mission offline, and you cannot swap execution backends.
+
+  ADR-007 separates them. The kernel owns the gate protocol. GitHub Actions
+  becomes one execution backend among potentially many.
+
+decision: |
+  taem-dev/taem is the TAEM kernel — a Go binary that is the authoritative
+  runtime for all missions. The kernel owns:
+    - The gate state machine (phase sequencing, GO/NO-GO evaluation)
+    - The controller registry (from controllers.yaml per ADR-005)
+    - The local execution path (deterministic controllers run in-process)
+    - The remote dispatch protocol (inference controllers → Ollama/Anthropic)
+    - The GitHub Actions dispatch (for GitHub-dependent jobs: NAV repo read, PAO)
+    - The mission state interface (reads/writes to mc-state via git)
+
+  GitHub Actions (mission.yml) becomes a backend — not the orchestrator.
+  The kernel calls GitHub Actions when needed. GitHub Actions does not call
+  the kernel. This inversion is the architectural change.
+
+constraints:
+  - id: C-007-001
+    type: HARD
+    scope: gate-ownership
+    rule: >
+      The gate state machine lives exclusively in the kernel.
+      No gate logic (phase advancement decisions, GO/NO-GO aggregation,
+      remediation cycle counting) may live in GitHub Actions workflow files,
+      shell scripts, or Python scripts in mc-state/scripts/.
+      GitHub Actions may run jobs but cannot make gate decisions.
+    check: |
+      ARCH.scan(mission_yml, patterns=[
+        'gate_decision_in_workflow', 'phase_advance_in_script',
+        'go_nogo_aggregation_in_yaml'
+      ]) == []
+    violation: NO-GO
+    adr: ADR-007
+
+  - id: C-007-002
+    type: HARD
+    scope: controller-interface
+    rule: >
+      Every controller — deterministic or inference — must implement the
+      Controller interface defined in taem/internal/controller/interface.go.
+      The interface has exactly three methods: Name() string,
+      Run(ctx, inputs) Signal, and Mode() ControllerMode.
+      No controller may be registered that does not implement this interface.
+    check: |
+      controllers.all(c =>
+        c.implements(['Name', 'Run', 'Mode']) == true
+      )
+    violation: NO-GO
+    adr: ADR-007
+
+  - id: C-007-003
+    type: HARD
+    scope: state-interface
+    rule: >
+      The kernel writes mission state exclusively by committing to mc-state
+      via the git interface (append_signal, append_manifest). The kernel
+      never writes directly to Qdrant — that is the ecosystem layer's domain.
+      The kernel reads from Qdrant via the ecosystem client only.
+    check: |
+      kernel.state_writes.all(w => w.backend == 'git_mc_state') AND
+      kernel.qdrant_writes.count() == 0
+    violation: NO-GO
+    adr: ADR-007
+
+  - id: C-007-004
+    type: HARD
+    scope: offline-capability
+    rule: >
+      The kernel must be able to complete Phases 00 through 03 with no
+      network access except to local Qdrant (ecosystem) and the local
+      filesystem. Phases 00–03 contain only DETERMINISTIC controllers
+      (GC, DPS, EECOM, FAO, NAV, ARCH, CDS, PCO, INCO).
+      Any network call in these phases beyond ecosystem and git is a
+      protocol violation.
+    check: |
+      phases_00_to_03.controllers.all(c =>
+        c.mode == 'deterministic' AND
+        c.network_calls.subset_of(['ecosystem', 'git', 'github_api_readonly'])
+      )
+    violation: NO-GO
+    adr: ADR-007
+
+  - id: C-007-005
+    type: HARD
+    scope: remediation-cap
+    rule: >
+      The kernel enforces the remediation cycle cap from ADR-003 C-003-004.
+      After two remediation cycles, the kernel sets mission status to
+      ESCALATED and halts. It does not dispatch a third workflow run.
+      No external system can override this — the cap is in kernel code,
+      not configuration.
+    check: |
+      kernel.remediation_cycles <= 2 OR
+      mission.status == 'ESCALATED'
+    violation: NO-GO
+    adr: ADR-007
+
+  - id: C-007-006
+    type: SOFT
+    scope: github-backend
+    rule: >
+      GitHub Actions jobs dispatched by the kernel should be stateless —
+      they read from mc-state, do work, write a signal back to mc-state,
+      and exit. Jobs should not maintain any state between runs beyond
+      what is committed to mc-state.
+    check: |
+      github_jobs.all(j => j.uses_external_state_store == false)
+    violation: WARN
+    adr: ADR-007
+
+# ── Kernel Architecture ───────────────────────────────────────────────────────
+kernel_architecture:
+
+  binary: "taem"
+  module: "github.com/taem-dev/taem"
+
+  package_layout:
+    cmd/taem/main.go: "cobra root — launch, status, watch, retry, log, adrs, init"
+    internal/kernel/kernel.go: "Mission struct, Run(), phase sequencer"
+    internal/kernel/gate.go: "Gate state machine — GO/NO-GO aggregation per phase"
+    internal/kernel/registry.go: "Controller registry — loads controllers.yaml"
+    internal/controller/interface.go: "Controller interface definition"
+    internal/controller/deterministic/: "All 11 deterministic controller implementations"
+    internal/controller/inference/: "Inference router + 4 inference controller implementations"
+    internal/controller/inference/router.go: "Ollama→Anthropic fallback logic per ADR-005"
+    internal/state/: "mc-state git interface — read signals, write signals, read manifest"
+    internal/ecosystem/: "Qdrant client — read repo_surfaces, mission_memory, etc."
+    internal/dispatch/github.go: "GitHub Actions workflow_dispatch client"
+    internal/dispatch/local.go: "Local execution — runs controllers in-process"
+    config/controllers.yaml: "Controller registry — normative per ADR-005"
+    prompts/: "Inference system prompts — one file per inference controller"
+
+  gate_state_machine:
+    description: >
+      The gate state machine is a pure function: given a phase number and
+      the current set of signals for that phase, it returns ADVANCE, HOLD,
+      or ABORT. It has no side effects. It reads no network. It is testable
+      in isolation with no dependencies.
+    states:
+      WAITING:  "Phase started, not all required controllers have signaled"
+      ADVANCE:  "All required controllers GO — kernel starts next phase"
+      HOLD:     "One or more controllers NO-GO — remediation check"
+      ABORT:    "Remediation cap reached or non-overridable NO-GO — ESCALATED"
+    transitions:
+      "WAITING → ADVANCE": "all required signals received AND all == GO"
+      "WAITING → HOLD":    "all required signals received AND any == NO-GO"
+      "HOLD → WAITING":    "remediation applied, re-entering failed phase"
+      "HOLD → ABORT":      "remediation_cycles >= 2 OR non-overridable 2× PRB NO-GO"
+
+  execution_model:
+    local_deterministic:
+      description: "Runs in-process, synchronous, no goroutine overhead for simple controllers"
+      controllers: [GC, DPS, EECOM, FAO, ARCH, CDS, PCO, INCO, TRC, CAPCOM]
+      parallelism: "per-phase parallel via goroutines with WaitGroup"
+    local_inference:
+      description: "Runs in-process goroutines, calls Ollama/Anthropic via HTTP"
+      controllers: [SECINSP, PRB-SKP, PRB-COR, PRB-ADR]
+      parallelism: "all inference controllers in a phase run concurrently"
+    github_dispatch:
+      description: "Dispatches to GitHub Actions for NAV (repo access) and PAO (publish)"
+      controllers: [NAV, PAO]
+      reason: >
+        NAV requires access to target repos via GitHub App token — easier to
+        run as a GitHub Actions job than to manage App token rotation locally.
+        PAO fires repository_dispatch — natively a GitHub API call.
+      wait_for_completion: true
+      timeout_s: 300
+
+  mission_lifecycle:
+    - "kernel.Launch() — validate inputs, generate mission_id, write manifest to mc-state"
+    - "kernel.Run(phase=0) — execute Phase 00 controllers (GC, DPS, EECOM)"
+    - "gate.Evaluate(phase=0) — ADVANCE if all GO"
+    - "kernel.DispatchGitHub(NAV) — NAV reads repos via Actions, writes ecosystem + map"
+    - "kernel.Run(phase=1) — FAO start checkpoint"
+    - "gate.Evaluate(phase=1) — ADVANCE"
+    - "kernel.Run(phase=2) — ARCH, CDS, PCO in parallel goroutines"
+    - "gate.Evaluate(phase=2) — ADVANCE"
+    - "kernel.Run(phase=3) — INCO"
+    - "gate.Evaluate(phase=3) — ADVANCE"
+    - "kernel.Run(phase=4) — SECINSP, TRC in parallel, then PRB-SKP, PRB-COR, PRB-ADR"
+    - "gate.Evaluate(phase=4) — PRB vote aggregation — ADVANCE or HOLD"
+    - "kernel.Run(phase=5) — CAPCOM writes step summary"
+    - "gate.Evaluate(phase=5) — ADVANCE"
+    - "kernel.DispatchGitHub(PAO) — repository_dispatch to fabric-social"
+    - "kernel.MissionClose() — write lessons_learned to ecosystem, update index.jsonl"
+
+rationale: |
+  The kernel architecture was chosen because the gate state machine is the
+  most important and most testable piece of TAEM. Making it a pure Go
+  function — no network, no side effects — means it can be unit tested
+  completely, run offline, and reasoned about independently of the controllers
+  it gates.
+
+  GitHub Actions is retained as the execution backend for NAV and PAO because
+  both genuinely benefit from running in the GitHub environment: NAV needs
+  App token access to target repos, PAO needs to fire repository_dispatch.
+  Everything else runs locally and faster.
+
+  The result: a mission that takes 90 seconds in the current design takes
+  approximately 30–45 seconds in the kernel architecture, because 11 of 15
+  controllers run as local goroutines with no network round-trip overhead.
+
+consequences:
+  positive:
+    - Gate protocol is testable in complete isolation
+    - Phases 00–03 run entirely locally — no GitHub dependency
+    - Mission time drops from ~90s to ~30-45s for typical missions
+    - Controllers are independently testable Go packages
+    - New controllers are Go packages, not workflow YAML + Python scripts
+    - The kernel binary is the complete TAEM installation — one binary, no deps
+  risks:
+    - risk: "Kernel binary must be distributed and kept current"
+      mitigation: "go install github.com/taem-dev/taem/cmd/taem@latest — single command"
+    - risk: "NAV still requires GitHub Actions dispatch — adds latency"
+      mitigation: "NAV cache hits (ADR-006 C-006-003) eliminate most dispatch calls"
+    - risk: "Local goroutine model requires careful resource management"
+      mitigation: "context.WithTimeout on all controller runs. Kernel cancels on timeout."
+
+superseded_by: null

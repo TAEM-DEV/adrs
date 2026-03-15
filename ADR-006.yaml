@@ -1,0 +1,289 @@
+metadata:
+  id: ADR-006
+  title: "Ecosystem Layer — Persistent Semantic Map"
+  status: ACCEPTED
+  date: "2026-03-15"
+  author: "Ryan // ry-ops.dev"
+  supersedes: null
+  superseded_by: null
+  affects:
+    - taem-dev/ecosystem
+    - taem-dev/taem
+    - taem-dev/mc-state
+
+context: |
+  Every TAEM mission runs NAV from scratch — reading repos, extracting
+  API surfaces, building an integration map cold. This has three problems:
+
+  1. It is slow. NAV re-reads repos that haven't changed since the last
+     mission. The same API surface is extracted dozens of times.
+
+  2. It is amnesiac. There is no memory of what has been tried before,
+     what patterns have been validated, what wiring has been proven safe.
+     Mission 50 is no smarter than Mission 1.
+
+  3. It is fragile. A repo being temporarily unreachable causes NAV to
+     produce an incomplete map, which cascades into ARCH, CDS, and PRB
+     working with incomplete data.
+
+  The solution is a persistent semantic layer — a continuously-maintained
+  model of the entire ecosystem that missions read from and update, rather
+  than recreating on every run. This layer is the difference between TAEM
+  as a linter and TAEM as a system that understands your infrastructure.
+
+  "Don't mix rocket fuel with coffee." — the ecosystem map is not mission
+  state. It is infrastructure, maintained independently of any mission.
+
+decision: |
+  taem-dev/ecosystem is a standalone service backed by Qdrant.
+  It maintains five named collections representing the live state of the
+  ecosystem, the history of all missions, the ADR constraint corpus, the
+  learned operational knowledge, and the wiring patterns that have been
+  validated safe.
+
+  NAV writes to the ecosystem after every successful corpus ingestion.
+  Controllers query the ecosystem before building their assessments.
+  The ecosystem is updated continuously — not per-mission.
+  The ecosystem never goes down when mc-state has a bad push.
+
+constraints:
+  - id: C-006-001
+    type: HARD
+    scope: separation
+    rule: >
+      The ecosystem layer is a separate service from mc-state.
+      Mission artifacts (signals.jsonl, integration-map.json, step-plan.json)
+      are never stored in Qdrant. The ecosystem contains semantic
+      representations and learned knowledge — not raw mission records.
+      Raw records live in mc-state. Summaries and embeddings live in ecosystem.
+    check: |
+      ecosystem.collections.none(c =>
+        c.name in ['signals', 'manifest', 'step_plan', 'remediation']
+      )
+    violation: NO-GO
+    adr: ADR-006
+
+  - id: C-006-002
+    type: HARD
+    scope: write-ownership
+    rule: >
+      Only NAV may write to the repo_surfaces collection.
+      Only the kernel's mission-close routine may write to mission_memory.
+      Only ARCH may write to the constraint_index collection.
+      No controller may write to a collection it does not own.
+    check: |
+      ecosystem.write_log.all(w =>
+        (w.collection == 'repo_surfaces'    AND w.writer == 'NAV') OR
+        (w.collection == 'mission_memory'   AND w.writer == 'kernel.mission_close') OR
+        (w.collection == 'constraint_index' AND w.writer == 'ARCH') OR
+        (w.collection == 'wiring_patterns'  AND w.writer == 'kernel.mission_close') OR
+        (w.collection == 'lessons_learned'  AND w.writer == 'kernel.mission_close')
+      )
+    violation: NO-GO
+    adr: ADR-006
+
+  - id: C-006-003
+    type: HARD
+    scope: nav-diff
+    rule: >
+      NAV must diff against the current ecosystem state before reading
+      live repos. If a repo's last_commit_sha in repo_surfaces matches
+      the live repo HEAD, NAV uses the cached surface and does not
+      re-clone. Re-reading an unchanged repo without checking the cache
+      is a protocol violation.
+    check: |
+      NAV.execution_log.all(e =>
+        e.cache_checked == true AND
+        (e.cache_hit == true OR e.head_sha != e.cached_sha)
+      )
+    violation: NO-GO
+    adr: ADR-006
+
+  - id: C-006-004
+    type: HARD
+    scope: availability
+    rule: >
+      If the ecosystem service is unreachable, NAV must emit HOLD —
+      not build a cold integration map and proceed. A cold map is not
+      equivalent to a warmed ecosystem-backed map. Proceeding cold
+      silently degrades mission quality without surfacing the degradation.
+    check: |
+      IF ecosystem.reachable == false THEN
+        NAV.signal == 'HOLD' AND
+        NAV.reason.contains('ecosystem unavailable')
+    violation: NO-GO
+    adr: ADR-006
+
+  - id: C-006-005
+    type: SOFT
+    scope: freshness
+    rule: >
+      repo_surfaces entries older than 24 hours should be marked stale
+      and re-validated against live repo HEAD on next NAV run.
+      Entries older than 7 days must be re-read regardless of SHA match.
+    check: |
+      ecosystem.repo_surfaces
+        .filter(r => r.age_hours > 168)
+        .all(r => r.status == 'stale')
+    violation: WARN
+    adr: ADR-006
+
+# ── Qdrant Collection Definitions ────────────────────────────────────────────
+collections:
+
+  repo_surfaces:
+    description: >
+      Live API surfaces of every repo taem-flight[bot] has access to.
+      NAV writes here after corpus ingestion. All controllers read from here.
+    owner: NAV
+    update_trigger: "after every NAV corpus ingestion"
+    schema:
+      repo_name: string
+      org: string
+      language: string
+      last_commit_sha: string
+      last_updated: ISO8601
+      status: "fresh | stale | unreachable"
+      exposes:
+        - type: "mcp_tool | event | webhook | http_endpoint | cli_command"
+          name: string
+          signature: object
+          file_path: string
+          line_number: integer
+      consumes:
+        - type: string
+          source: string
+          event: string
+      active_constraints: "[]string — ADR constraint IDs that apply to this repo"
+      known_patterns: "[]string — PCO pattern IDs confirmed present"
+    vector_field: "embedding of repo description + exposed interfaces for semantic search"
+    qdrant_collection: "taem_repo_surfaces"
+
+  mission_memory:
+    description: >
+      Semantic summary of every completed mission. Not raw JSONL —
+      structured summaries that controllers can query to find relevant
+      prior missions before building their assessments.
+    owner: "kernel.mission_close"
+    update_trigger: "on mission LANDED or ABORTED"
+    schema:
+      mission_id: string
+      task: string
+      repos: "[]string"
+      outcome: "LANDED | ABORTED | ESCALATED"
+      duration_s: integer
+      nogo_controllers: "[]string — which controllers fired NO-GO"
+      nogo_constraints: "[]string — which ADR constraints were violated"
+      remediation_cycles: integer
+      integration_patterns: "[]string — wiring patterns used"
+      lessons_learned: string
+      landed_at: ISO8601
+    vector_field: "embedding of task description for semantic similarity search"
+    qdrant_collection: "taem_mission_memory"
+    query_use: >
+      PRB-Skeptic queries this before assessment:
+      'find missions similar to this task that resulted in NO-GO or ABORTED'
+      NAV queries this to find prior integration maps for similar repo sets.
+
+  constraint_index:
+    description: >
+      All active ADR constraints as searchable vectors.
+      ARCH writes here when ADR corpus is loaded or updated.
+      Controllers query to find constraints relevant to a specific
+      wiring pattern without evaluating the entire corpus.
+    owner: ARCH
+    update_trigger: "on ADR corpus change (new ADR, status change)"
+    schema:
+      constraint_id: string
+      adr_id: string
+      type: "HARD | SOFT | ADVISORY"
+      scope: string
+      rule_text: string
+      check_expression: string
+      violation: "NO-GO | WARN | LOG"
+      banned_patterns: "[]string — extracted from check: field for fast scan"
+    vector_field: "embedding of rule_text for semantic constraint search"
+    qdrant_collection: "taem_constraint_index"
+    query_use: >
+      ARCH queries: 'find constraints relevant to unicast routing'
+      PRB-ADR queries: 'find constraints that apply to GitHub App auth patterns'
+
+  wiring_patterns:
+    description: >
+      Validated safe wiring patterns from past LANDED missions.
+      A wiring pattern that has been through TAEM preflight and LANDED
+      is a proven pattern — future missions can reference it as evidence
+      of safety without re-evaluating from scratch.
+    owner: "kernel.mission_close"
+    update_trigger: "on mission LANDED, for each wiring[] entry"
+    schema:
+      pattern_id: string
+      from_type: string
+      to_type: string
+      via: string
+      transport: string
+      validated_missions: "[]string — mission IDs that used this pattern"
+      first_validated: ISO8601
+      last_validated: ISO8601
+      arch_constraints_checked: "[]string"
+      secinsp_cleared: boolean
+    vector_field: "embedding of pattern description"
+    qdrant_collection: "taem_wiring_patterns"
+    query_use: >
+      NAV queries: 'has this from→to via pattern been validated before?'
+      ARCH queries: 'find similar validated patterns to assess constraint coverage'
+
+  lessons_learned:
+    description: >
+      Structured operational knowledge extracted from remediation cycles
+      and ABORTED missions. The Skeptic reads this before every PRB assessment.
+      This is how TAEM gets smarter over time.
+    owner: "kernel.mission_close"
+    update_trigger: "on remediation cycle complete or mission ABORTED"
+    schema:
+      lesson_id: string
+      mission_id: string
+      controller: string
+      phase: integer
+      pattern_that_failed: string
+      root_cause: string
+      remediation_applied: string
+      outcome: "CLEARED | ESCALATED"
+      applies_to_repos: "[]string"
+      applies_to_constraints: "[]string"
+      recorded_at: ISO8601
+    vector_field: "embedding of pattern_that_failed + root_cause"
+    qdrant_collection: "taem_lessons_learned"
+    query_use: >
+      PRB-Skeptic queries before every assessment:
+      'find lessons from missions with similar repos or task descriptions'
+      This is the Skeptic's memory — it knows what has failed before.
+
+rationale: |
+  Separate from mc-state because mission state and semantic knowledge have
+  different lifecycles, access patterns, and failure modes. Mission state
+  is append-only, per-mission, and read sequentially. Semantic knowledge
+  is updated continuously, queried across missions, and accessed randomly.
+  Mixing them produces a system where both are harder to operate.
+
+  Qdrant was chosen because it is already in the ry-ops infrastructure
+  stack, supports both vector search (for semantic similarity) and
+  structured filtering (for constraint lookups), and has an existing MCP
+  server (qdrant-fabric) with 30 tools already built.
+
+consequences:
+  positive:
+    - NAV cache hits eliminate redundant repo reads — missions get faster over time
+    - PRB-Skeptic has memory of prior failures — catches repeat mistakes
+    - ARCH constraint lookup is semantic — finds relevant constraints by meaning
+    - Proven wiring patterns don't require full re-evaluation
+    - The ecosystem is the living wiring diagram of your infrastructure
+  risks:
+    - risk: "Ecosystem service unavailability blocks all missions"
+      mitigation: "ADR-006 C-006-004 — NAV emits HOLD not NO-GO. Mission suspends, not aborts."
+    - risk: "Stale ecosystem data causes incorrect cache hits"
+      mitigation: "C-006-005 freshness policy + SHA-based cache validation in C-006-003"
+    - risk: "Write ownership violations corrupt collection integrity"
+      mitigation: "C-006-002 hard constraint — kernel enforces at write time"
+
+superseded_by: null

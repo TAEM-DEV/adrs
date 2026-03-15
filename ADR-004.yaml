@@ -1,0 +1,165 @@
+metadata:
+  id: ADR-004
+  title: "Git-First Mission Architecture"
+  status: ACCEPTED
+  date: "2026-03-15"
+  author: "Ryan // ry-ops.dev"
+  supersedes: null
+  superseded_by: null
+  affects:
+    - taem-dev/taem
+    - taem-dev/mc-state
+
+context: |
+  ADR-003 specified the Mission Control preflight protocol and its 15
+  controller agents. It did not specify where those agents run, how they
+  are triggered, or how their state is persisted.
+
+  git-steer (ry-ops/git-steer) proved that autonomous systems whose
+  entire operational state lives in a GitHub repository — with GitHub
+  Actions as the runtime and PRs as the worker boundary — are fully
+  auditable, naturally versioned, operable from any git client, and
+  require no external infrastructure beyond GitHub.
+
+decision: |
+  TAEM missions are git-first. The mc-state repository is simultaneously
+  the state store, the ADR corpus loader, the workflow runtime, and the
+  audit log. A mission begins with a CLI push to mc-state and ends with
+  a commit. GitHub Actions is FLIGHT. Everything in between is a job.
+
+constraints:
+  - id: C-004-001
+    type: HARD
+    scope: state-store
+    rule: >
+      mc-state is the only state store. No external databases, message
+      queues, Redis instances, or API servers may be introduced as
+      operational dependencies of the mission runtime. Optional integrations
+      (Qdrant, Ollama) are checked by GC and are non-blocking if unavailable.
+    check: |
+      ARCH.scan(plan, patterns=[
+        'external_database', 'redis_required', 'postgresql',
+        'mongodb', 'message_queue_required', 'rabbitmq',
+        'kafka', 'sqs_required', 'api_server_required'
+      ]) == []
+    violation: NO-GO
+    adr: ADR-004
+
+  - id: C-004-002
+    type: HARD
+    scope: signal-transport
+    rule: >
+      Every controller agent must emit its signal by appending to
+      signals.jsonl in mc-state and pushing a commit. No other signal
+      transport (HTTP callbacks, webhooks to external systems, pub/sub,
+      shared memory) is permitted.
+    check: |
+      plan.steps
+        .filter(s => s.type == 'controller_signal')
+        .all(s => s.mechanism == 'jsonl_commit_push')
+    violation: NO-GO
+    adr: ADR-004
+
+  - id: C-004-003
+    type: HARD
+    scope: phase-gates
+    rule: >
+      Phase gates are enforced exclusively via the GitHub Actions needs:
+      dependency graph in mission.yml. No custom gate-checking code,
+      polling loops, or external coordination service may replace or
+      supplement this mechanism.
+    check: |
+      ARCH.scan(plan, patterns=[
+        'custom_gate_check', 'poll_for_signals',
+        'external_coordinator', 'gate_bypass'
+      ]) == []
+    violation: NO-GO
+    adr: ADR-004
+
+  - id: C-004-004
+    type: HARD
+    scope: cli-boundary
+    rule: >
+      The mc CLI must not contain controller logic, assessment code, or
+      agent orchestration. It generates mission manifests, pushes to
+      mc-state, and reads state for display. All assessment logic lives
+      in scripts/ called by workflow jobs.
+    check: |
+      ARCH.scan(cli_plan, patterns=[
+        'cli_runs_arch', 'cli_runs_nav', 'cli_runs_prb',
+        'cli_orchestrates_agents', 'cli_calls_anthropic'
+      ]) == []
+    violation: NO-GO
+    adr: ADR-004
+
+  - id: C-004-005
+    type: HARD
+    scope: capcom-output
+    rule: >
+      CAPCOM developer-facing output must be written exclusively to
+      $GITHUB_STEP_SUMMARY and/or committed as LANDED.md in the mission
+      directory. No Slack messages, email, or external notifications
+      from CAPCOM.
+    check: |
+      ARCH.scan(plan, patterns=[
+        'capcom_slack', 'capcom_email', 'capcom_webhook',
+        'capcom_external_notification'
+      ]) == []
+    violation: NO-GO
+    adr: ADR-004
+
+  - id: C-004-006
+    type: SOFT
+    scope: controller-structure
+    rule: >
+      Controller logic should live in scripts/ as standalone Python scripts,
+      not as inline bash in mission.yml job steps. Inline steps longer than
+      10 lines are a soft violation — they belong in scripts/.
+    check: |
+      mission_yml.jobs
+        .flatMap(j => j.steps)
+        .filter(s => s.run != null)
+        .filter(s => s.run.lines().count() > 10)
+        .count() == 0
+    violation: WARN
+    adr: ADR-004
+
+  - id: C-004-007
+    type: SOFT
+    scope: concurrent-writes
+    rule: >
+      Scripts that commit to signals.jsonl in parallel jobs must use
+      git pull --rebase before git push. git push --force is never
+      permitted on any branch of mc-state.
+    check: |
+      scripts.append_signal.uses_rebase_pull == true AND
+      scripts.append_signal.uses_force_push == false
+    violation: WARN
+    adr: ADR-004
+
+rationale: |
+  The git-first architecture was chosen after git-steer proved the pattern
+  in production. Key properties:
+
+  Zero infrastructure: GitHub Actions runners are the compute layer.
+  Complete auditability: git log is the complete mission history.
+  GitHub UI is Mission Control: the Actions job graph visualizes the
+    phase gate structure exactly as ADR-003 specifies.
+  mc CLI is trivially simple: a manifest writer and git push.
+  PAO integration is native: repository_dispatch requires no servers.
+
+consequences:
+  positive:
+    - No servers, databases, or message brokers to operate
+    - GitHub Actions UI shows phase gates as a visual job graph
+    - Complete mission history via git log mc-state
+    - mc CLI remains maintainable by one person indefinitely
+  risks:
+    - risk: "GitHub Actions concurrency limits on free tier"
+      mitigation: "Peak is 3 parallel jobs — well within 20-job free limit"
+    - risk: "Concurrent signal commits causing push conflicts"
+      mitigation: "Retry-with-rebase pattern in append_signal.py (C-004-007)"
+    - risk: "mc-state main branch as hot write target with many missions"
+      mitigation: "Each mission writes only to missions/{id}/ — no file conflicts"
+
+superseded_by: null

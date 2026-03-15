@@ -1,0 +1,195 @@
+metadata:
+  id: ADR-005
+  title: "LLM Boundary — Deterministic vs Inference Controller Classification"
+  status: ACCEPTED
+  date: "2026-03-15"
+  author: "Ryan // ry-ops.dev"
+  supersedes: null
+  superseded_by: null
+  affects:
+    - taem-dev/taem
+    - taem-dev/mc-state
+    - taem-dev/ecosystem
+
+context: |
+  TAEM's 15 controller agents were initially conceived as AI agents calling
+  language models to evaluate integration plans. Design review revealed that
+  most controller work is parsing, pattern matching, schema validation, and
+  structured comparison — deterministic operations that do not benefit from
+  language model inference.
+
+  The classification test: "Could this controller's output be produced by a
+  well-written script with complete knowledge of the input data?"
+
+  If YES → DETERMINISTIC. If the answer requires judgment about intent,
+  novelty, or implicit meaning → INFERENCE.
+
+  Inference is opt-in, not opt-out. When in doubt, a controller is
+  DETERMINISTIC until an ADR amendment says otherwise.
+
+decision: |
+  11 of 15 TAEM controllers are DETERMINISTIC and make no LLM calls.
+  4 controllers require INFERENCE (PRB-Skeptic, PRB-Correctness,
+  PRB-ADR-Audit, SECINSP). Inference controllers attempt Ollama first
+  at a 0.85 confidence threshold, falling back to Anthropic only if
+  Ollama returns low confidence or times out at 45 seconds.
+
+  A complete TAEM mission can clear Phases 00–03 with zero LLM calls.
+
+constraints:
+  - id: C-005-001
+    type: HARD
+    scope: controller-execution
+    rule: >
+      Controllers classified as DETERMINISTIC must not make calls to
+      any inference service. The kernel enforces this at controller
+      registration by inspecting the mode: field.
+    check: |
+      controllers.yaml
+        .filter(c => c.mode == 'deterministic')
+        .all(c => c.impl.imports.contains('inference_client') == false)
+    violation: NO-GO
+    adr: ADR-005
+
+  - id: C-005-002
+    type: HARD
+    scope: inference-protocol
+    rule: >
+      Inference controllers must attempt Ollama before Anthropic on
+      every call. Direct Anthropic calls without a prior Ollama attempt
+      are a protocol violation. If OLLAMA_URL is not configured, the
+      controller emits HOLD — not a direct Anthropic call.
+    check: |
+      inference_controllers.all(c =>
+        c.execution_log.ollama_attempted == true OR
+        c.signal == 'HOLD'
+      )
+    violation: NO-GO
+    adr: ADR-005
+
+  - id: C-005-003
+    type: HARD
+    scope: inference-threshold
+    rule: >
+      The Ollama confidence threshold for acceptance is 0.85 system-wide.
+      This value is a kernel constant, not a per-mission or per-controller
+      configurable parameter. Changes require a new ADR.
+    check: |
+      kernel.OLLAMA_CONFIDENCE_THRESHOLD == 0.85
+    violation: NO-GO
+    adr: ADR-005
+
+  - id: C-005-004
+    type: HARD
+    scope: inference-logging
+    rule: >
+      Every inference call must append to the controller's signals.jsonl
+      entry: inference_backend, ollama_confidence (if attempted),
+      latency_ms, fallback_reason (if applicable).
+    check: |
+      signals.filter(s => s.controller in INFERENCE_CONTROLLERS)
+        .all(s => s.inference_backend != null AND s.latency_ms != null)
+    violation: NO-GO
+    adr: ADR-005
+
+  - id: C-005-005
+    type: HARD
+    scope: classification-change
+    rule: >
+      A controller's mode: field in controllers.yaml may only be changed
+      by a new or amended ADR. PRs changing mode: without a corresponding
+      ADR amendment are rejected by ARCH.
+    check: |
+      ARCH.scan(plan, patterns=[
+        'mode_change_without_adr'
+      ]) == []
+    violation: NO-GO
+    adr: ADR-005
+
+  - id: C-005-006
+    type: SOFT
+    scope: inference-timeout
+    rule: >
+      Inference controller Ollama timeout is 45 seconds by default.
+      Per-controller overrides in controllers.yaml are permitted but
+      must include a rationale comment. Never reduce below 20 seconds
+      for PRB agents.
+    check: |
+      controllers.yaml
+        .filter(c => c.mode == 'inference')
+        .filter(c => c.timeout_s != null AND c.timeout_s < 20)
+        .count() == 0
+    violation: WARN
+    adr: ADR-005
+
+  - id: C-005-007
+    type: ADVISORY
+    scope: model-health
+    rule: >
+      If Ollama fallback rate exceeds 30% over 10 missions, surface a
+      recommendation to upgrade the Ollama model or refine the system
+      prompt. Diagnostic signal only — not a gate condition.
+    check: |
+      index.last(10).avg(m => m.ollama_fallback_rate) <= 0.30
+    violation: LOG
+    adr: ADR-005
+
+# Controller classification registry — normative
+controller_classifications:
+  deterministic:
+    - GC       # HTTP ping checks — binary reachable/unreachable
+    - DPS      # JSON Schema validation — jsonschema library
+    - EECOM    # GitHub API rate_limit — arithmetic against thresholds
+    - FAO      # Timestamp arithmetic — phase duration comparison
+    - NAV      # AST parsing, schema extraction, structured diff
+    - ARCH     # check: expression evaluation against plan and map
+    - CDS      # Set intersection — tool names, ports, schema fields
+    - PCO      # Pattern registry match — present/absent
+    - INCO     # Dependency graph topological sort
+    - TRC      # File existence, function signature grep, test command parse
+    - CAPCOM   # Structured JSON → formatted text — template rendering
+
+  inference:
+    - SECINSP  # Novel attack surface recognition — known patterns deterministic, novel requires reasoning
+    - PRB-SKP  # Adversarial intent — implicit assumption detection
+    - PRB-COR  # Interface compatibility reasoning with partial specs
+    - PRB-ADR  # Novel pattern matching against constraint intent not just text
+
+  dispatch:
+    - PAO      # Not an assessment controller — no mode classification
+
+inference_config:
+  ollama_model: "llama3.2"
+  confidence_threshold: 0.85
+  timeout_s: 45
+  fallback: "anthropic"
+  anthropic_model: "claude-sonnet-4-6"
+
+rationale: |
+  The 0.85 confidence threshold is the point at which Ollama's output is
+  reliable enough that the signal it produces is more valuable than the
+  cost of falling back. Below 0.85 the model expresses meaningful
+  uncertainty — and uncertainty in a preflight controller is itself a signal.
+
+  Phases 00–03 completable offline with zero LLM cost means TAEM can
+  produce a complete, ADR-validated integration plan before any language
+  model is consulted. PRB then reasons about that plan with full context.
+  This is the correct order: structure first, then judgment.
+
+consequences:
+  positive:
+    - 11 controllers: zero latency, zero cost, zero external dependency
+    - Phases 00-03 fully offline capable
+    - Bounded cost ceiling — under $0.10 per mission worst case
+    - Ollama-first means zero Anthropic cost when local model is healthy
+    - Every inference call is auditable via signals.jsonl logging
+    - Future controllers default DETERMINISTIC — LLM requires ADR justification
+  risks:
+    - risk: "Ollama model quality insufficient for PRB or SECINSP"
+      mitigation: "0.85 threshold triggers Anthropic fallback. Chronic fallback logged and surfaced."
+    - risk: "DETERMINISTIC classification misses novel failure mode"
+      mitigation: "PRB-Skeptic (INFERENCE) runs after all deterministic controllers — this is its explicit job."
+    - risk: "Anthropic unavailable — mission stalls at Phase 04"
+      mitigation: "HOLD signal, not NO-GO. Phases 00-03 artifacts preserved. Mission resumes when inference available."
+
+superseded_by: null

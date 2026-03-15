@@ -1,0 +1,147 @@
+metadata:
+  id: ADR-003
+  title: "Mission Control Preflight System"
+  status: ACCEPTED
+  date: "2026-03-15"
+  author: "Ryan // ry-ops.dev"
+  supersedes: null
+  superseded_by: null
+  affects:
+    - taem-dev/taem
+    - taem-dev/mc-state
+    - taem-dev/adrs
+
+context: |
+  Agentic coding systems operate in a reactive generate→fail→retry loop.
+  They read project files without architectural comprehension, produce code
+  that guesses at wiring between subsystems, and enter unbounded correction
+  cycles when assumptions are wrong.
+
+  In the TAEM ecosystem, cross-project integration carries hard constraints
+  from ADR-001 and ADR-002. Violating either silently produces code that
+  passes surface tests but fails in production.
+
+  NASA Mission Control solved this in 1965: decompose readiness into isolated
+  domains, assign one controller per domain, require a binary Go/No-Go signal
+  from each before any phase advances. No single controller can be overridden
+  by another's confidence.
+
+decision: |
+  TAEM missions are gated behind a structured preflight protocol staffed by
+  15 autonomous controller agents, each modeled on a NASA flight controller
+  role. No code proceeds to implementation until every assigned controller
+  emits GO. Any single NO-GO halts the sequence. FLIGHT has final authority.
+
+constraints:
+  - id: C-003-001
+    type: HARD
+    scope: preflight-gate
+    rule: >
+      No code generation (Phase 05) begins until Phase 04 gate is fully
+      cleared. Phase 04 requires GO from: SECINSP, TRC, and PRB (2/3 majority).
+      Zero exceptions.
+    check: |
+      signals
+        .filter(s => s.phase == 4)
+        .filter(s => s.controller in ['SECINSP', 'TRC', 'PRB'])
+        .all(s => s.signal == 'GO')
+    violation: NO-GO
+    adr: ADR-003
+
+  - id: C-003-002
+    type: HARD
+    scope: capcom-protocol
+    rule: >
+      CAPCOM is the only controller that produces developer-facing output.
+      No other controller may write to $GITHUB_STEP_SUMMARY, post a PR
+      comment, or send any notification to the developer during preflight.
+    check: |
+      ARCH.scan(plan, patterns=[
+        'non_capcom_step_summary', 'controller_direct_output',
+        'controller_pr_comment_before_capcom'
+      ]) == []
+    violation: NO-GO
+    adr: ADR-003
+
+  - id: C-003-003
+    type: HARD
+    scope: prb-protocol
+    rule: >
+      PRB requires 2/3 majority GO. A tie (1 GO, 1 NO-GO, 1 anything)
+      is always NO-GO. FLIGHT may override exactly one PRB NO-GO with
+      documented rationale. Two or more PRB NO-GOs are non-overridable.
+    check: |
+      prb_votes = signals
+        .filter(s => s.controller == 'PRB' and s.prb_votes != null)
+        .last().prb_votes
+      go_count = prb_votes.values().count(v => v == 'GO')
+      go_count >= 2
+    violation: NO-GO
+    adr: ADR-003
+
+  - id: C-003-004
+    type: HARD
+    scope: remediation
+    rule: >
+      Remediation cycles are capped at 2. On the third NO-GO cycle,
+      FLIGHT must escalate to human review. The workflow must not
+      auto-retry a third time.
+    check: |
+      remediation_cycles = remediation_jsonl.count()
+      remediation_cycles <= 2
+    violation: NO-GO
+    adr: ADR-003
+
+  - id: C-003-005
+    type: HARD
+    scope: phase-sequence
+    rule: >
+      Phases must advance in order: 00→01→02→03→04→04b→05→06.
+      No phase may begin until all jobs in the prior phase have
+      emitted GO signals. This is enforced by the needs: graph in
+      mission.yml and must not be circumvented.
+    check: |
+      manifest_jsonl
+        .filter(e => e.event == 'PHASE_START')
+        .map(e => e.phase)
+        .is_monotonically_increasing()
+    violation: NO-GO
+    adr: ADR-003
+
+  - id: C-003-006
+    type: SOFT
+    scope: performance
+    rule: >
+      Total preflight duration should not exceed 90 seconds for a
+      standard integration (2-3 repos, 3-4 ADRs in corpus).
+      Exceeding this is a performance advisory — FAO reports it.
+    check: |
+      fao.mission_duration_s <= 90
+    violation: WARN
+    adr: ADR-003
+
+rationale: |
+  The NASA Mission Control model was adopted because it solves the exact
+  same problem at a different scale: how do you make a complex, multi-domain
+  system safe to advance when each domain has specialized knowledge the
+  others lack?
+
+  The Go/No-Go protocol's key insight is that confidence in one domain
+  cannot compensate for uncertainty in another. ARCH going GO does not
+  mean SECINSP can be skipped. This is the property TAEM needs.
+
+consequences:
+  positive:
+    - The generate→fail→retry loop is structurally eliminated
+    - ADR compliance is enforced before code is written, not after
+    - Peer review (PRB) is baked into the protocol, not optional
+    - Integration maps become durable artifacts for future missions
+  risks:
+    - risk: "Preflight adds latency before code is produced"
+      mitigation: "Phases 00-01 run in <15s. Target total is 90s (C-003-006)"
+    - risk: "Machine-checkable ADRs require more disciplined authoring"
+      mitigation: "ADR-000 template enforces the check: field structure"
+    - risk: "PRB false NO-GOs on novel patterns"
+      mitigation: "FLIGHT can override one sub-agent vote with rationale"
+
+superseded_by: null

@@ -1,0 +1,126 @@
+metadata:
+  id: ADR-002
+  title: "GitHub PR as Canonical Worker Boundary"
+  status: ACCEPTED
+  date: "2026-03-15"
+  author: "Ryan // ry-ops.dev"
+  supersedes: null
+  superseded_by: null
+  affects:
+    - taem-dev/taem
+    - taem-dev/mc-state
+    - git-fabric/fabric-sdk
+    - ry-ops/git-steer
+    - ry-ops/cve-responder
+
+context: |
+  The Cortex platform used Kubernetes Jobs as its worker primitive.
+  This was a documented failure mode: Jobs that stalled held resources
+  indefinitely, partial failures produced inconsistent state with no
+  natural cleanup boundary, and the retry model required complex
+  dead-letter queue infrastructure.
+
+  git-steer proved an alternative: the GitHub Pull Request as a worker
+  boundary. A PR has a clear lifecycle (open → review → merge/close),
+  a natural audit trail (commits, review comments, status checks),
+  built-in retry semantics (push a new commit), and zero infrastructure
+  cost (GitHub manages the state).
+
+decision: |
+  GitHub Pull Requests are the canonical worker boundary for all autonomous
+  agents in the TAEM ecosystem. Workers are invoked by opening or updating
+  a PR. Workers complete by merging or closing the PR. Workers do not
+  persist between invocations. No long-running worker processes are permitted.
+
+constraints:
+  - id: C-002-001
+    type: HARD
+    scope: worker-boundary
+    rule: >
+      All autonomous worker implementations must use the GitHub PR
+      as their execution boundary. Workers that require persistence
+      between invocations must checkpoint state to a JSONL file and
+      re-read on next invocation. No in-memory state survives across
+      invocations.
+    check: |
+      ARCH.scan(plan, patterns=[
+        'kubernetes_job', 'k8s_job', 'CronJob',
+        'Deployment', 'StatefulSet', 'DaemonSet',
+        'long_poll', 'while True', 'while true',
+        'daemon_thread', 'background_thread',
+        'asyncio.run_forever', 'loop.run_forever',
+        'persistent_worker', 'keep_alive'
+      ]) == []
+    violation: NO-GO
+    adr: ADR-002
+
+  - id: C-002-002
+    type: HARD
+    scope: worker-boundary
+    rule: >
+      Workers that need to signal completion must do so by:
+      (a) writing a commit to a state JSONL file, or
+      (b) posting a GitHub PR review comment, or
+      (c) triggering a repository_dispatch event.
+      No other completion signaling mechanism is permitted.
+    check: |
+      plan.steps
+        .filter(s => s.type == 'worker_completion')
+        .all(s => s.mechanism in [
+          'jsonl_commit', 'pr_review_comment', 'repository_dispatch'
+        ])
+    violation: NO-GO
+    adr: ADR-002
+
+  - id: C-002-003
+    type: HARD
+    scope: worker-boundary
+    rule: >
+      GitHub Actions jobs used as controller agents must exit cleanly
+      after emitting their signal. Jobs must not sleep, poll, or wait
+      for external events after emitting their signal to signals.jsonl.
+    check: |
+      ARCH.scan(plan, patterns=[
+        'time.sleep', 'asyncio.sleep in loop',
+        'wait_for_event', 'poll_until',
+        'job_keeps_running'
+      ]) == []
+    violation: NO-GO
+    adr: ADR-002
+
+  - id: C-002-004
+    type: SOFT
+    scope: worker-boundary
+    rule: >
+      PR descriptions should contain structured metadata in a
+      machine-readable block (YAML or JSON frontmatter) so downstream
+      agents can parse worker intent without reading the full PR body.
+    check: |
+      pr.body.contains('```yaml') OR pr.body.contains('```json')
+    violation: WARN
+    adr: ADR-002
+
+rationale: |
+  The PR worker boundary was chosen after direct experience with the
+  Cortex Kubernetes Jobs failure mode. Key advantages of PRs over Jobs:
+
+  - Natural lifecycle with no orphan risk
+  - Built-in audit trail via git commits and review comments
+  - Retry = push a new commit, no dead-letter queue needed
+  - Zero infrastructure cost
+  - Visible to humans without specialized tooling
+  - Consistent with ADR-004 git-first architecture
+
+consequences:
+  positive:
+    - No zombie workers — PR lifecycle is managed by GitHub
+    - Full audit trail for every worker invocation
+    - Retry is as simple as pushing a new commit
+    - Zero additional infrastructure
+  risks:
+    - risk: "Long-running tasks must be decomposed into PR-sized units"
+      mitigation: "INCO's sequencing step handles decomposition explicitly"
+    - risk: "GitHub API rate limits affect PR creation throughput"
+      mitigation: "EECOM monitors rate limit headroom before Phase 01"
+
+superseded_by: null

@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 220" width="900" height="220">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d1117"/>
+      <stop offset="100%" style="stop-color:#161b22"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#238636"/>
+      <stop offset="100%" style="stop-color:#2ea043"/>
+    </linearGradient>
+    <linearGradient id="pulse-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#238636;stop-opacity:0"/>
+      <stop offset="50%" style="stop-color:#3fb950;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#238636;stop-opacity:0"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow-strong">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="clip"><rect width="900" height="220" rx="12"/></clipPath>
+  </defs>
+
+  <!-- Background -->
+  <g clip-path="url(#clip)">
+    <rect width="900" height="220" fill="url(#bg)"/>
+
+    <!-- Grid lines -->
+    <g stroke="#21262d" stroke-width="0.5" opacity="0.5">
+      <line x1="0" y1="40" x2="900" y2="40"/>
+      <line x1="0" y1="80" x2="900" y2="80"/>
+      <line x1="0" y1="120" x2="900" y2="120"/>
+      <line x1="0" y1="160" x2="900" y2="160"/>
+      <line x1="160" y1="0" x2="160" y2="220"/>
+      <line x1="320" y1="0" x2="320" y2="220"/>
+      <line x1="480" y1="0" x2="480" y2="220"/>
+      <line x1="640" y1="0" x2="640" y2="220"/>
+      <line x1="800" y1="0" x2="800" y2="220"/>
+    </g>
+
+    <!-- Shield icon area (left side) -->
+    <g transform="translate(80, 70)" filter="url(#glow)">
+      <!-- Shield shape -->
+      <path d="M0,-35 L-30,-20 L-30,5 Q-30,30 0,42 Q30,30 30,5 L30,-20 Z" fill="none" stroke="#238636" stroke-width="2.5" opacity="0.9"/>
+      <path d="M0,-28 L-23,-16 L-23,3 Q-23,23 0,33 Q23,23 23,3 L23,-16 Z" fill="#238636" fill-opacity="0.15"/>
+      <!-- Checkmark inside shield -->
+      <g filter="url(#glow-strong)">
+        <path d="M-10,2 L-3,10 L12,-8" fill="none" stroke="#3fb950" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+          <animate attributeName="opacity" values="0.7;1;0.7" dur="2.5s" repeatCount="indefinite"/>
+        </path>
+      </g>
+    </g>
+
+    <!-- Divider line -->
+    <line x1="160" y1="20" x2="160" y2="160" stroke="#30363d" stroke-width="1.5"/>
+
+    <!-- Title -->
+    <text x="190" y="62" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="42" font-weight="bold" fill="#e6edf3">adrs</text>
+
+    <!-- Tagline -->
+    <text x="190" y="88" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="14" fill="#8b949e">Machine-checkable architecture decisions  &#x2022;  v0.0.1</text>
+
+    <!-- Green accent bar with animation -->
+    <rect x="190" y="100" width="460" height="3" rx="1.5" fill="url(#accent)">
+      <animate attributeName="width" from="0" to="460" dur="1.5s" fill="freeze" begin="0.3s"/>
+    </rect>
+
+    <!-- Feature pills row -->
+    <g transform="translate(190, 120)">
+      <!-- YAML Format (green) -->
+      <rect x="0" y="0" width="108" height="26" rx="13" fill="#238636" fill-opacity="0.2" stroke="#238636" stroke-width="1"/>
+      <text x="54" y="17" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="11" fill="#3fb950" text-anchor="middle">YAML Format</text>
+
+      <!-- ARCH Parseable (blue) -->
+      <rect x="120" y="0" width="128" height="26" rx="13" fill="#1f6feb" fill-opacity="0.2" stroke="#1f6feb" stroke-width="1"/>
+      <text x="184" y="17" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="11" fill="#58a6ff" text-anchor="middle">ARCH Parseable</text>
+
+      <!-- Gate Constraints (purple) -->
+      <rect x="260" y="0" width="138" height="26" rx="13" fill="#6e40c9" fill-opacity="0.2" stroke="#6e40c9" stroke-width="1"/>
+      <text x="329" y="17" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="11" fill="#bc8cff" text-anchor="middle">Gate Constraints</text>
+
+      <!-- Versioned (yellow) -->
+      <rect x="410" y="0" width="100" height="26" rx="13" fill="#b08800" fill-opacity="0.2" stroke="#b08800" stroke-width="1"/>
+      <text x="460" y="17" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="11" fill="#d29922" text-anchor="middle">Versioned</text>
+    </g>
+
+    <!-- Bottom architecture bar -->
+    <rect x="0" y="175" width="900" height="45" fill="#161b22"/>
+    <line x1="0" y1="175" x2="900" y2="175" stroke="#30363d" stroke-width="1"/>
+
+    <!-- Architecture chain -->
+    <g transform="translate(30, 198)">
+      <!-- Pulsing green dot -->
+      <circle cx="0" cy="0" r="4" fill="#3fb950" filter="url(#glow)">
+        <animate attributeName="opacity" values="0.5;1;0.5" dur="2s" repeatCount="indefinite"/>
+      </circle>
+      <text x="14" y="4" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="11" fill="#8b949e">ADR Corpus</text>
+
+      <!-- Arrow 1 -->
+      <text x="122" y="4" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="11" fill="#484f58">&#x2192;</text>
+
+      <!-- Dot 2 -->
+      <circle cx="148" cy="0" r="3" fill="#3fb950" opacity="0.7">
+        <animate attributeName="opacity" values="0.4;0.9;0.4" dur="2s" begin="0.5s" repeatCount="indefinite"/>
+      </circle>
+      <text x="162" y="4" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="11" fill="#8b949e">ARCH Controller</text>
+
+      <!-- Arrow 2 -->
+      <text x="300" y="4" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="11" fill="#484f58">&#x2192;</text>
+
+      <!-- Dot 3 -->
+      <circle cx="326" cy="0" r="3" fill="#3fb950" opacity="0.7">
+        <animate attributeName="opacity" values="0.4;0.9;0.4" dur="2s" begin="1s" repeatCount="indefinite"/>
+      </circle>
+      <text x="340" y="4" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="11" fill="#8b949e">Gate Enforcement</text>
+
+      <!-- Arrow 3 -->
+      <text x="485" y="4" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="11" fill="#484f58">&#x2192;</text>
+
+      <!-- Dot 4 -->
+      <circle cx="511" cy="0" r="3" fill="#3fb950" opacity="0.7">
+        <animate attributeName="opacity" values="0.4;0.9;0.4" dur="2s" begin="1.5s" repeatCount="indefinite"/>
+      </circle>
+      <text x="525" y="4" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="11" fill="#8b949e">Mission Safety</text>
+    </g>
+
+    <!-- Version badge (top-right corner) -->
+    <g transform="translate(830, 18)">
+      <rect x="0" y="0" width="55" height="22" rx="11" fill="#30363d" stroke="#484f58" stroke-width="0.5"/>
+      <text x="27.5" y="15" font-family="'SF Mono','Cascadia Code','Fira Code',monospace" font-size="10" fill="#8b949e" text-anchor="middle">v0.0.1</text>
+    </g>
+
+    <!-- Border -->
+    <rect width="900" height="220" rx="12" fill="none" stroke="#30363d" stroke-width="1"/>
+  </g>
+</svg>

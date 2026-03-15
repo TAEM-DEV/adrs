@@ -1,0 +1,116 @@
+metadata:
+  id: ADR-001
+  title: "Unicast-Only Agent Resolution"
+  status: ACCEPTED
+  date: "2026-03-15"
+  author: "Ryan // ry-ops.dev"
+  supersedes: null
+  superseded_by: null
+  affects:
+    - taem-dev/taem
+    - taem-dev/mc-state
+    - git-fabric/fabric-sdk
+    - ry-ops/git-steer
+    - ry-ops/cve-responder
+
+context: |
+  The Fabric-SDK ecosystem requires predictable, auditable routing between
+  agents. Multicast and broadcast patterns hide topology, make routing
+  decisions implicit, and produce failures that are difficult to trace.
+  Service meshes introduce middleware that can intercept, buffer, or drop
+  messages without visible indication in logs.
+
+  The F-RIB (Fabric Routing Information Base) is designed for explicit
+  unicast routing. Allowing any multicast-adjacent pattern undermines
+  the F-RIB's core guarantee: you always know exactly who sent what to whom.
+
+decision: |
+  All agent-to-agent and service-to-service resolution in the TAEM
+  ecosystem is strictly unicast. Every connection is explicit, point-to-point,
+  and visible in the routing table. No pattern that hides topology is
+  permitted at any layer.
+
+constraints:
+  - id: C-001-001
+    type: HARD
+    scope: routing
+    rule: >
+      All agent-to-agent resolution must be unicast.
+      No broadcast, multicast, or topology-hiding service mesh
+      patterns are permitted in any integration plan or implementation.
+    check: |
+      ARCH.scan(plan, patterns=[
+        'multicast', 'broadcast', 'service_mesh',
+        'dns_sd', 'mdns', 'consul_connect',
+        'envoy_proxy', 'istio', 'linkerd',
+        'aws_service_discovery', 'consul_catalog'
+      ]) == []
+    violation: NO-GO
+    adr: ADR-001
+
+  - id: C-001-002
+    type: HARD
+    scope: routing
+    rule: >
+      All MCP tool calls must target a specific, named endpoint.
+      Wildcard targets, load-balanced pools without explicit member
+      declaration, and round-robin DNS targets are prohibited.
+    check: |
+      integration_map.wiring.all(w =>
+        w.transport == 'unicast' AND
+        w.target != null AND
+        w.target != '*' AND
+        w.target != 'any'
+      )
+    violation: NO-GO
+    adr: ADR-001
+
+  - id: C-001-003
+    type: SOFT
+    scope: routing
+    rule: >
+      Explicit IP addresses are preferred over hostnames for
+      intra-cluster communication. Hostname resolution introduces
+      a DNS layer that can change without a code change.
+    check: |
+      integration_map.wiring
+        .filter(w => w.transport == 'unicast')
+        .filter(w => w.target.matches('^[a-z].*\\.svc\\.cluster\\.local$'))
+        .count() == 0
+    violation: WARN
+    adr: ADR-001
+
+  - id: C-001-004
+    type: ADVISORY
+    scope: routing
+    rule: >
+      New unicast connections should be registered in the F-RIB
+      before being used in production. Unregistered connections
+      are advisory violations — they work but reduce observability.
+    check: |
+      ARCH.scan(plan, patterns=['new_connection_not_in_frib']) == []
+    violation: LOG
+    adr: ADR-001
+
+rationale: |
+  Unicast-only routing was chosen over service mesh after the Cortex
+  failure mode analysis. Cortex's implicit routing via Kubernetes service
+  discovery produced failures that were invisible until production. The
+  F-RIB explicit routing model makes every connection a first-class
+  artifact that can be audited, versioned, and traced.
+
+  Ryan explicitly dislikes multicast. This is a values-level constraint,
+  not just a technical one.
+
+consequences:
+  positive:
+    - Every connection is visible in the F-RIB and auditable
+    - Failures are traceable to a specific unicast path
+    - No middleware to debug between sender and receiver
+  risks:
+    - risk: "Explicit unicast requires more upfront configuration"
+      mitigation: "NAV generates the integration map — configuration is automated"
+    - risk: "Cannot use off-the-shelf service discovery tooling"
+      mitigation: "F-RIB provides equivalent functionality with full visibility"
+
+superseded_by: null

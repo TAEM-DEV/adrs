@@ -1,0 +1,91 @@
+# ══════════════════════════════════════════════════════════════
+# ADR-000 — The ADR Template Standard
+# TAEM machine-parseable format — this file IS the template
+# ══════════════════════════════════════════════════════════════
+
+metadata:
+  id: ADR-000
+  title: "The ADR Template Standard"
+  status: ACCEPTED
+  date: "2026-03-15"
+  author: "Ryan // ry-ops.dev"
+  supersedes: null
+  superseded_by: null
+  affects:
+    - taem-dev/adrs
+    - taem-dev/mc-state
+    - taem-dev/taem
+
+context: |
+  Every ADR in the TAEM ecosystem must be machine-checkable, not just
+  human-readable. The ARCH controller agent reads ADRs to verify
+  integration plans against active constraints. If a constraint cannot
+  be parsed deterministically, ARCH cannot enforce it.
+
+  ADR-000 defines the canonical structure all ADRs must follow.
+
+decision: |
+  All ADRs in taem-dev/adrs must follow this template exactly.
+  The constraints: block with machine-parseable check: fields is
+  mandatory for all HARD constraints.
+
+constraints:
+  - id: C-000-001
+    type: HARD
+    scope: adr-authoring
+    rule: >
+      Every ADR must contain: metadata, context, decision,
+      constraints, rationale, consequences, superseded_by sections
+      in this exact order.
+    check: |
+      ADR.has_sections([
+        'metadata', 'context', 'decision',
+        'constraints', 'rationale', 'consequences', 'superseded_by'
+      ]) == true
+    violation: NO-GO
+    adr: ADR-000
+
+  - id: C-000-002
+    type: HARD
+    scope: adr-authoring
+    rule: >
+      All HARD constraints must have a machine-parseable check: field.
+      A HARD constraint without check: is treated as unenforced and
+      flagged by ARCH as an authoring error.
+    check: |
+      ADR.constraints
+        .filter(c => c.type == 'HARD')
+        .all(c => c.check != null && c.check.strip() != '')
+    violation: NO-GO
+    adr: ADR-000
+
+  - id: C-000-003
+    type: SOFT
+    scope: adr-authoring
+    rule: >
+      SOFT and ADVISORY constraints should have check: fields.
+      Absence is permitted but flagged as advisory by ARCH.
+    check: |
+      ADR.constraints
+        .filter(c => c.type in ['SOFT', 'ADVISORY'])
+        .filter(c => c.check == null)
+        .count() == 0
+    violation: WARN
+    adr: ADR-000
+
+rationale: |
+  Machine-checkable ADRs are the foundation of the ARCH controller's
+  ability to enforce constraints without human interpretation.
+  Without explicit check: fields, ARCH falls back to judgment,
+  which is less reliable and defeats the purpose of the protocol.
+
+consequences:
+  positive:
+    - ARCH can enforce constraints deterministically
+    - ADR violations surface at preflight, not in production
+    - Constraint language becomes a shared vocabulary across all agents
+  risks:
+    - risk: "ADR authors must invest more time writing check: expressions"
+      mitigation: "This file serves as the template — copy and fill"
+
+superseded_by: null
