@@ -137,19 +137,32 @@ approved_models:
   - name: "qwen2.5:14b"
     params: "14.8B"
     quantization: "Q4_K_M"
+    status: REJECTED
+    approved_date: "2026-03-18"
+    rejected_date: "2026-03-18"
+    notes: |
+      Initially approved via CO-008-001. Rejected during deployment:
+      k3s worker03 at 94% memory (9.3GB/10GB) — 14B model (9.0GB)
+      causes OOM on Ollama pod. Connection drops during model load.
+      Superseded by qwen2.5-coder:7b in CO-008-002.
+
+  - name: "qwen2.5-coder:7b"
+    params: "7.6B"
+    quantization: "Q4_K_M"
     status: ACTIVE
     approved_date: "2026-03-18"
     notes: |
-      Approved via CO-008-001. Already deployed on k3s Ollama instance.
-      4.7x parameter increase over llama3.2. Strong instruction-following
-      and JSON output compliance in Qwen2.5 family.
+      Approved via CO-008-002. Already deployed on k3s Ollama instance.
+      2.4x parameter increase over llama3.2. Qwen2.5-coder variant has
+      strong structured output and instruction-following. Fits within
+      k3s worker memory constraints (4.7GB model + 1-2GB inference overhead).
 
 # ── Change Orders ─────────────────────────────────────────────────────────
 
 change_orders:
   - id: CO-008-001
     title: "Migrate inference model from llama3.2 (3B) to qwen2.5:14b (14.8B)"
-    status: APPROVED
+    status: SUPERSEDED_BY_CO-008-002
     requested_date: "2026-03-18"
     approved_date: "2026-03-18"
     requested_by: "Ryan // ry-ops.dev"
@@ -208,7 +221,65 @@ change_orders:
       Rebuild taem binary and relaunch.
 
     verification:
-      missions: []  # To be populated after migration
+      missions: []  # Superseded before verification — see CO-008-002
+      notes: |
+        qwen2.5:14b (9.0GB) caused OOM on k3s worker03 (94% memory,
+        9.3GB/10GB used). Ollama pod became unresponsive during model
+        load. Superseded by CO-008-002 (qwen2.5-coder:7b).
+
+  - id: CO-008-002
+    title: "Migrate inference model from llama3.2 (3B) to qwen2.5-coder:7b (7.6B)"
+    status: APPROVED
+    requested_date: "2026-03-18"
+    approved_date: "2026-03-18"
+    requested_by: "Ryan // ry-ops.dev"
+    approved_by: "Ryan // ry-ops.dev"
+    supersedes: CO-008-001
+
+    current_model: "llama3.2"
+    proposed_model: "qwen2.5-coder:7b"
+
+    rationale: |
+      CO-008-001 (qwen2.5:14b) failed deployment — OOM on k3s worker03.
+      The 14B model at 9.0GB exceeds available memory when other pods
+      are running on the same node.
+
+      qwen2.5-coder:7b (7.6B, Q4_K_M, 4.7GB) is the right sizing:
+        - 2.4x parameter increase over llama3.2 (3B)
+        - Fits within k3s worker memory (4.7GB + ~2GB overhead = ~7GB)
+        - Qwen2.5-coder variant optimized for structured output
+        - Already deployed and available on the k3s Ollama instance
+        - Same Qwen2.5 family as the fabric fine-tunes
+
+    changes:
+      - file: "config/controllers.yaml"
+        field: "inference_defaults.ollama_model"
+        from: "llama3.2"
+        to: "qwen2.5-coder:7b"
+      - file: "config/controllers.yaml"
+        field: "controllers[SECINSP].inference.ollama_model"
+        from: "llama3.2"
+        to: "qwen2.5-coder:7b"
+      - file: "config/controllers.yaml"
+        field: "controllers[PRB-SKP].inference.ollama_model"
+        from: "llama3.2"
+        to: "qwen2.5-coder:7b"
+      - file: "config/controllers.yaml"
+        field: "controllers[PRB-COR].inference.ollama_model"
+        from: "llama3.2"
+        to: "qwen2.5-coder:7b"
+      - file: "config/controllers.yaml"
+        field: "controllers[PRB-ADR].inference.ollama_model"
+        from: "llama3.2"
+        to: "qwen2.5-coder:7b"
+
+    rollback_plan: |
+      Revert controllers.yaml ollama_model fields to "llama3.2".
+      llama3.2 remains available on the Ollama instance — no pull needed.
+      Rebuild taem binary and relaunch.
+
+    verification:
+      missions: []  # To be populated after first successful mission
 
 rationale: |
   ADR-005 established the Ollama-first inference protocol but left model
@@ -232,10 +303,10 @@ consequences:
     - Field evidence requirement prevents benchmark-chasing
   risks:
     - risk: "Larger model increases latency beyond controller timeout"
-      mitigation: "Controller timeout is 180s. qwen2.5:14b completes in 30-90s on k3s workers."
+      mitigation: "Controller timeout is 180s. qwen2.5-coder:7b expected 30-60s on k3s workers."
     - risk: "Larger model causes OOM on Ollama pod"
-      mitigation: "qwen2.5:14b at Q4_K_M is 9.0GB. Ollama pod has 12GB available."
-    - risk: "qwen2.5:14b may not improve JSON compliance"
+      mitigation: "qwen2.5:14b proved this risk real (CO-008-001 failed). qwen2.5-coder:7b at 4.7GB fits within worker memory. Always verify node memory before model changes."
+    - risk: "New model may not improve JSON compliance"
       mitigation: "C-008-005 requires 6 verification missions post-migration. Rollback if criteria not met."
 
 superseded_by: null
