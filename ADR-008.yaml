@@ -1,0 +1,241 @@
+metadata:
+  id: ADR-008
+  title: "Inference Model Strategy — Selection, Sizing, and Migration"
+  status: ACCEPTED
+  date: "2026-03-18"
+  author: "Ryan // ry-ops.dev"
+  supersedes: null
+  superseded_by: null
+  affects:
+    - taem-dev/taem
+    - taem-dev/adrs
+
+context: |
+  ADR-005 established the LLM boundary — which controllers use inference and
+  the Ollama-first routing protocol. It did not specify criteria for selecting
+  or changing the Ollama model itself.
+
+  TAEM's inference controllers (SECINSP, PRB-SKP, PRB-COR, PRB-ADR) require
+  the model to:
+    1. Follow structured output instructions (emit valid JSON with vote/reason)
+    2. Absorb multi-section context (step plan, integration map, ADR constraints)
+    3. Distinguish mission types (review vs implement) and adjust evaluation
+    4. Produce consistent results across runs for the same input
+
+  The initial deployment used llama3.2 (3B, Q4_K_M). Field observations from
+  missions MSN-130dada169395701 through MSN-672186c0a9ca9426 revealed:
+    - PRB-SKP: 60%+ JSON parse failures (truncated/malformed output)
+    - PRB-ADR: ignored mission type context, evaluated empty review plans
+      as implementation failures
+    - SECINSP: inconsistent GO/NO-GO across remediation cycles for same code
+    - PRB-COR: only controller that occasionally absorbed prompt correctly
+
+  The 3B parameter count is insufficient for the structured reasoning and
+  instruction-following these controllers require. This is a model sizing
+  problem, not a prompt engineering problem.
+
+decision: |
+  TAEM inference controllers use the largest Ollama model that fits within
+  the k3s cluster's memory constraints while meeting the quality criteria
+  below. Model changes follow the change order process defined in this ADR.
+
+  Quality criteria for inference model selection:
+    1. JSON output compliance: >= 90% valid JSON responses across 10 runs
+    2. Instruction adherence: mission type flag correctly influences output
+    3. Consistency: same input produces same vote >= 80% of the time
+    4. Latency: complete response within controller timeout (180s)
+    5. Memory: fits within Ollama pod resource limits on k3s workers
+
+  The inference model is specified in two places (both must agree):
+    - controllers.yaml: inference_defaults.ollama_model
+    - controllers.yaml: per-controller inference.ollama_model overrides
+
+  ADR-005 C-005-003 (confidence threshold 0.85) remains unchanged.
+  ADR-005 C-005-002 (Ollama-first protocol) remains unchanged.
+
+constraints:
+  - id: C-008-001
+    type: HARD
+    scope: model-change
+    rule: >
+      Inference model changes require a documented change order committed
+      to taem-dev/adrs as a YAML amendment to this ADR. The change order
+      must include: current model, proposed model, rationale with field
+      evidence, rollback plan, and approval status.
+    check: |
+      controllers.yaml.inference_defaults.ollama_model IN
+        ADR-008.approved_models
+    violation: NO-GO
+    adr: ADR-008
+
+  - id: C-008-002
+    type: HARD
+    scope: model-registry
+    rule: >
+      Only models listed in the approved_models registry below may be
+      used. Adding a model requires a change order. The registry is the
+      single source of truth — controllers.yaml must reference a model
+      that appears here.
+    check: |
+      controllers.yaml
+        .filter(c => c.inference != null)
+        .all(c => c.inference.ollama_model IN ADR-008.approved_models)
+    violation: NO-GO
+    adr: ADR-008
+
+  - id: C-008-003
+    type: HARD
+    scope: model-availability
+    rule: >
+      The approved model must be pulled and available on the Ollama
+      instance before any mission launch. GC (Ground Control) should
+      verify model availability as part of Phase 00 pad check.
+    check: |
+      ollama.api.tags.models.any(m => m.name == controllers.yaml.inference_defaults.ollama_model)
+    violation: NO-GO
+    adr: ADR-008
+
+  - id: C-008-004
+    type: SOFT
+    scope: model-sizing
+    rule: >
+      The inference model should use Q4_K_M quantization to balance
+      quality and memory. Full-precision models are not recommended
+      for k3s worker nodes with limited RAM.
+    check: |
+      ollama.model.details.quantization_level == 'Q4_K_M'
+    violation: WARN
+    adr: ADR-008
+
+  - id: C-008-005
+    type: ADVISORY
+    scope: model-evaluation
+    rule: >
+      After any model change, run 3 review missions and 3 implement
+      missions against known repos. Compare PRB JSON compliance rate,
+      vote consistency, and latency against the prior model. Log results
+      in the change order's verification section.
+    check: |
+      change_order.verification.missions.count() >= 6
+    violation: LOG
+    adr: ADR-008
+
+# ── Approved Models Registry ──────────────────────────────────────────────
+
+approved_models:
+  - name: "llama3.2"
+    params: "3.2B"
+    quantization: "Q4_K_M"
+    status: DEPRECATED
+    approved_date: "2026-03-15"
+    deprecated_date: "2026-03-18"
+    notes: |
+      Initial deployment model. Insufficient for PRB structured output.
+      JSON compliance < 40%. Mission type instructions not absorbed.
+      See change order CO-008-001.
+
+  - name: "qwen2.5:14b"
+    params: "14.8B"
+    quantization: "Q4_K_M"
+    status: ACTIVE
+    approved_date: "2026-03-18"
+    notes: |
+      Approved via CO-008-001. Already deployed on k3s Ollama instance.
+      4.7x parameter increase over llama3.2. Strong instruction-following
+      and JSON output compliance in Qwen2.5 family.
+
+# ── Change Orders ─────────────────────────────────────────────────────────
+
+change_orders:
+  - id: CO-008-001
+    title: "Migrate inference model from llama3.2 (3B) to qwen2.5:14b (14.8B)"
+    status: APPROVED
+    requested_date: "2026-03-18"
+    approved_date: "2026-03-18"
+    requested_by: "Ryan // ry-ops.dev"
+    approved_by: "Ryan // ry-ops.dev"
+
+    current_model: "llama3.2"
+    proposed_model: "qwen2.5:14b"
+
+    rationale: |
+      Field evidence from 5 missions (MSN-130dada169395701 through
+      MSN-672186c0a9ca9426) demonstrates llama3.2 (3B) cannot meet
+      TAEM inference quality requirements:
+
+      1. JSON output compliance: < 40% (PRB-SKP fails to produce
+         parseable JSON in majority of runs)
+      2. Instruction adherence: mission type flag ("review") ignored
+         by PRB-ADR — still flags empty step plans as failures
+      3. Consistency: SECINSP produces GO then NO-GO for identical
+         code across remediation cycles
+      4. Context absorption: PRB-SKP and PRB-ADR do not reference
+         the mission type section despite it being prepended to input
+
+      qwen2.5:14b (14.8B, Q4_K_M) is already deployed on the k3s
+      Ollama instance. The Qwen2.5 family has demonstrated strong
+      structured output and instruction-following in the fabric
+      ecosystem (aiana-ops, git-steer-ops fine-tunes are Qwen2.5-based).
+
+      Memory impact: 4.7GB (llama3.2) → 9.0GB (qwen2.5:14b).
+      The Ollama pod has sufficient headroom on k3s workers.
+
+    changes:
+      - file: "config/controllers.yaml"
+        field: "inference_defaults.ollama_model"
+        from: "llama3.2"
+        to: "qwen2.5:14b"
+      - file: "config/controllers.yaml"
+        field: "controllers[SECINSP].inference.ollama_model"
+        from: "llama3.2"
+        to: "qwen2.5:14b"
+      - file: "config/controllers.yaml"
+        field: "controllers[PRB-SKP].inference.ollama_model"
+        from: "llama3.2"
+        to: "qwen2.5:14b"
+      - file: "config/controllers.yaml"
+        field: "controllers[PRB-COR].inference.ollama_model"
+        from: "llama3.2"
+        to: "qwen2.5:14b"
+      - file: "config/controllers.yaml"
+        field: "controllers[PRB-ADR].inference.ollama_model"
+        from: "llama3.2"
+        to: "qwen2.5:14b"
+
+    rollback_plan: |
+      Revert controllers.yaml ollama_model fields to "llama3.2".
+      llama3.2 remains available on the Ollama instance — no pull needed.
+      Rebuild taem binary and relaunch.
+
+    verification:
+      missions: []  # To be populated after migration
+
+rationale: |
+  ADR-005 established the Ollama-first inference protocol but left model
+  selection implicit. Field experience proved that model sizing directly
+  impacts gate reliability — a model too small produces structurally
+  correct but practically useless signals (NO-GO on valid review missions,
+  malformed JSON requiring parse failure fallbacks).
+
+  Formalizing model selection as an ADR constraint ensures:
+  1. Model changes are deliberate, documented, and reversible
+  2. The approved models registry prevents ad-hoc model swaps
+  3. Quality criteria are defined before migration, not after failure
+  4. Field evidence drives decisions, not benchmarks
+
+consequences:
+  positive:
+    - Model changes are traceable via change orders
+    - Quality criteria prevent regression to insufficient models
+    - Approved models registry is the single source of truth
+    - Rollback plan is mandatory — no one-way migrations
+    - Field evidence requirement prevents benchmark-chasing
+  risks:
+    - risk: "Larger model increases latency beyond controller timeout"
+      mitigation: "Controller timeout is 180s. qwen2.5:14b completes in 30-90s on k3s workers."
+    - risk: "Larger model causes OOM on Ollama pod"
+      mitigation: "qwen2.5:14b at Q4_K_M is 9.0GB. Ollama pod has 12GB available."
+    - risk: "qwen2.5:14b may not improve JSON compliance"
+      mitigation: "C-008-005 requires 6 verification missions post-migration. Rollback if criteria not met."
+
+superseded_by: null
