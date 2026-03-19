@@ -216,18 +216,52 @@ new_cli_command:
     Does not require an active mission or TAEM_MC_STATE_PATH.
 
 graduation_sequence:
-  phase_1: "TAEM kernel operational — missions LAND (complete today)"
-  phase_2: |
-    AIANA gets domain_knowledge collection.
-    refexplorer Python worker scaffolded as k3s Job.
-    PRB-SKP gets real lessons_learned from backward knowledge.
-    PRB-ADR gets real constraint semantics from domain_knowledge.
-    NAV warm cache — repo surfaces cached in Redis, second run < 5s.
-  phase_3: |
-    CAPCOM triggers AIANA synthesis post-land.
-    Blog posts, READMEs, security reports auto-generated on mission complete.
-    taem knowledge CLI command live and functional.
-  phase_4: |
-    Any project in git-fabric runs taem launch and gets a complete
-    technical brief on completion. Security reports filed automatically.
-    Blog content drafted and queued for FABRIC/SOCIAL via PAO.
+  phase_1:
+    status: COMPLETE
+    completed: "2026-03-18"
+    description: "TAEM kernel operational — missions LAND"
+
+  phase_2:
+    status: COMPLETE
+    completed: "2026-03-19"
+    description: |
+      AIANA gets domain_knowledge collection.
+      refexplorer Python worker scaffolded as k3s Job.
+      PRB-SKP gets real lessons_learned from backward knowledge.
+      PRB-ADR gets real constraint semantics from domain_knowledge.
+    artifacts:
+      - "domain_knowledge Qdrant collection (768-dim, Cosine, 7 payload indexes)"
+      - "TAEM-DEV/refexplorer repo (refexplorer.py, Dockerfile, job.yaml)"
+      - "ghcr.io/taem-dev/refexplorer:latest (amd64)"
+      - "TAEM-DEV/ecosystem PR #3 — domain_knowledge handler + auth"
+      - "TAEM-DEV/taem PR #15 — ecosystem client + PRB-SKP/PRB-ADR wiring"
+    open_items:
+      - "NAV Redis warm cache — requires Redis client in ecosystem Go service (performance optimization, not blocking)"
+
+  phase_3:
+    status: COMPLETE
+    completed: "2026-03-19"
+    description: |
+      CAPCOM triggers synthesis post-land.
+      Blog posts, READMEs, security reports auto-generated on mission complete.
+      taem knowledge CLI command live and functional.
+    artifacts:
+      - "TAEM-DEV/taem PR #17 — taem knowledge CLI + CAPCOM synthesis + lessons_learned"
+      - "5 synthesis templates: blog-draft, readme, security-report, architecture-brief, pr-description"
+      - "kernel close() indexes lessons_learned to ecosystem"
+    open_items:
+      - "taem knowledge --annotate deferred to operator workflow design"
+      - "LLM-enhanced synthesis (beyond templates) deferred to future iteration"
+
+  phase_4:
+    status: COMPLETE
+    completed: "2026-03-19"
+    description: |
+      Any project in git-fabric runs taem launch and gets a complete
+      technical brief on completion. Security reports filed automatically.
+      Blog content drafted and queued for FABRIC/SOCIAL via PAO.
+    artifacts:
+      - "TAEM-DEV/taem PR #16 — PAO dispatch enrichment + signal summary + synthesis artifacts"
+      - "TAEM-DEV/mc-state commit 325760c — PAO workflow with synthesis payload"
+      - "docs/knowledge-pipeline.md — full pipeline documentation"
+    open_items: []
