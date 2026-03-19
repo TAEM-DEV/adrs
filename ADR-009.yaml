@@ -1,0 +1,296 @@
+metadata:
+  id: ADR-009
+  title: "Knowledge Synthesis Layer — TAEM Memory, Field Intelligence, and AIANA Integration"
+  status: ACCEPTED
+  date: "2026-03-19"
+  author: "Ryan // ry-ops.dev"
+  supersedes: null
+  superseded_by: null
+  affects:
+    - taem-dev/taem
+    - taem-dev/ecosystem
+    - taem-dev/mc-state
+    - taem-dev/refexplorer
+
+enforcement: ADVISORY
+related: [ADR-005, ADR-006, ADR-007, ADR-008]
+
+implementation:
+  status: COMPLETE
+  completed: "2026-03-19"
+  source_adr: ADR-009a.yaml
+  repos_changed:
+    - repo: TAEM-DEV/taem
+      prs: [15, 16, 17]
+      changes: "ecosystem client, PRB wiring, CAPCOM synthesis, taem knowledge CLI, PAO enrichment, lessons_learned"
+    - repo: TAEM-DEV/ecosystem
+      prs: [3]
+      changes: "domain_knowledge handler, auth, collection init"
+    - repo: TAEM-DEV/mc-state
+      commits: [325760c]
+      changes: "PAO workflow with synthesis dispatch"
+    - repo: TAEM-DEV/refexplorer
+      changes: "New repo — Python worker for co-citation graph, Semantic Scholar, embeddings"
+    - repo: TAEM-DEV/adrs
+      changes: "ADR-009a phase completion, ADR-009 finalized"
+  image: "ghcr.io/taem-dev/refexplorer:latest"
+
+context: |
+  The original NASA TAEM (Terminal Area Energy Management) guidance system for
+  the Space Shuttle did not re-derive physics on every approach. It carried
+  accumulated knowledge from every prior flight test, every simulation, every
+  engineering decision — pre-computed, validated, stored, and consulted at
+  runtime. The HAC geometry, energy profiles, midval constraint priorities were
+  institutional memory. This ADR applies that same principle to the TAEM
+  Mission Control kernel.
+
+  TAEM currently has no memory between missions. Every run starts cold:
+    - NAV re-fetches repo surfaces from GitHub APIs every launch
+    - ARCH re-evaluates ADR constraints from scratch
+    - PRB-SKP has no lessons_learned to query — the collection is empty
+    - PRB-ADR queries constraint_index semantically but gets nothing back
+    - CAPCOM produces a status report, not a technical deliverable
+
+  Two distinct knowledge gaps exist:
+
+  BACKWARD KNOWLEDGE — what this system has done and learned:
+    Prior mission signals, outcomes, step-plans, repo surfaces, integration
+    maps, wiring decisions, patterns that passed PRB vs. patterns that failed.
+    This is institutional memory. It should be permanently stored, never expire,
+    and grow richer with every landed mission.
+
+  FORWARD KNOWLEDGE — what the field knows that TAEM has not done yet:
+    Co-citation graph analysis of real implementations (refexplorer via
+    Semantic Scholar and OpenAlex), CVE exposure for specific integration
+    patterns (eagle-scout + NVD), public repo surfaces for reference
+    implementations (git-steer). This is field intelligence. It is
+    time-bounded, re-derivable, and cached by domain tag.
+
+  AIANA (ADR-006, L5 fabric layer) already exists and already has:
+    - Qdrant with 12,000+ vectors across 5 collections
+    - nomic-embed-text via Ollama for local embeddings (no external API)
+    - Mem0 semantic memory
+    - MCP server with 30 tools
+    - Redis infrastructure in the same cluster namespace
+
+  AIANA is the right host for this capability. The knowledge layer is L5 work
+  — session intelligence, memory, context — which is AIANA's domain. Building
+  a separate service would duplicate infrastructure already paid for.
+
+  The runway this unlocks: once both knowledge layers exist, CAPCOM stops being
+  a status reporter and becomes a synthesis engine. A landed mission produces:
+    - Blog post draft (mission narrative + field knowledge)
+    - README (step-plan + repo surfaces + integration map)
+    - Security posture report (SECINSP + eagle-scout + NVD)
+    - Architecture decision brief (ARCH + PRB-ADR + domain knowledge)
+    - PR description (step-plan citing the ADRs that governed each decision)
+
+  Every project that runs through TAEM gets all of this automatically.
+
+decision: |
+  AIANA receives a new tool: domain_knowledge.
+  AIANA receives a new Qdrant collection: domain_knowledge (sixth collection).
+  A Python worker (k3s Job) runs the refexplorer pipeline on demand and after
+  mission land, indexing results into domain_knowledge via nomic-embed-text.
+  TAEM gets a new CLI command: taem knowledge — which calls AIANA directly
+  with a specific intent, not a new service.
+  CAPCOM is expanded in a future phase to call AIANA post-land for synthesis.
+
+  AIANA stays AIANA. She gets smarter. taem knowledge is just taem talking
+  to AIANA with a specific intent. The Python refexplorer worker is a tool
+  in AIANA's toolbelt, not a separate service.
+
+  Tool boundary (clean):
+    taem          → kernel, controllers, gate, CLI
+    AIANA         → knowledge layer, Qdrant, Redis, embeddings, synthesis
+    refexplorer   → Python worker, runs as k3s Job triggered by AIANA
+    mc-state      → mission state, signals, artifacts
+    adrs          → governance
+
+  Language:
+    Go  — TAEM kernel calls AIANA via existing TAEM_ECOSYSTEM_URL HTTP interface
+    Python — refexplorer worker for co-citation graph, scoring, embeddings
+    Python worker runs as k3s Job (async, post-mission-land or on-demand)
+    nomic-embed-text on cluster Ollama — local embeddings, no external API
+
+knowledge_directions:
+  backward:
+    description: "Institutional memory — what TAEM has done and learned"
+    store: qdrant
+    collections: [lessons_learned, repo_surfaces, constraint_index, mission_outcomes]
+    ttl: permanent
+    indexed_by: "Python worker after MISSION_LANDED event"
+    queried_by: [PRB-SKP, PRB-ADR, NAV, CAPCOM]
+    redis_cache:
+      - pattern: "surface:{repo_hash}"
+        ttl: 3600
+        purpose: "Warm repo surface — skip GitHub API on NAV re-run"
+      - pattern: "mission:outcome:{mission_id}"
+        ttl: null
+        purpose: "Hot pointer to landed mission Qdrant entry"
+
+  forward:
+    description: "Field intelligence — what the broader field knows"
+    store: qdrant
+    collection: domain_knowledge
+    ttl: 7 days (Redis classification cache), permanent (Qdrant vectors)
+    indexed_by: "refexplorer Python worker via AIANA tool call"
+    queried_by: [PRB-SKP, PRB-ADR, SECINSP, CAPCOM, taem knowledge]
+    sources:
+      - Semantic Scholar (co-citation graph, paper metadata)
+      - OpenAlex (fallback, abstract enrichment)
+      - CrossRef (last-resort abstract fallback)
+      - eagle-scout (CVE exposure for integration patterns)
+      - NVD (CVE cross-reference)
+      - git-steer (public repo surfaces for reference implementations)
+    redis_cache:
+      - pattern: "domain:classification:{task_hash}"
+        ttl: 604800
+        purpose: "Skip re-running refexplorer for known domain"
+      - pattern: "domain:warm:{domain_tag}"
+        ttl: 86400
+        purpose: "Flag that Qdrant vectors for this domain are warm"
+
+constraints:
+  - id: C-009-001
+    rule: "domain_knowledge Qdrant entries must include source, score, domain_tags, and operator_annotations"
+    enforcement: HARD
+    check: "domain_knowledge entries pass schema validation on write"
+
+  - id: C-009-002
+    rule: "REFEX controller is optional — its absence never blocks mission advancement"
+    enforcement: HARD
+    check: "REFEX signal_type is ADVISORY, not GO | NO-GO"
+
+  - id: C-009-003
+    rule: "Redis domain classification cache TTL must not exceed 7 days"
+    enforcement: SOFT
+    check: "Redis keys for domain_knowledge use TTL <= 604800s"
+
+  - id: C-009-004
+    rule: "Semantic Scholar API calls must respect rate limits — 1.1s minimum sleep"
+    enforcement: HARD
+    check: "refexplorer rate limit config is present and enforced"
+
+  - id: C-009-005
+    rule: "Operator annotations are append-only — automated processes cannot delete them"
+    enforcement: HARD
+    check: "annotation writes use append semantics, never overwrite"
+
+  - id: C-009-006
+    rule: "taem knowledge must function independently of an active mission"
+    enforcement: HARD
+    check: "knowledge command does not require TAEM_MC_STATE_PATH to be set"
+
+  - id: C-009-007
+    rule: "CVE synthesis must cross-reference NVD and eagle-scout, not just literature"
+    enforcement: SOFT
+    check: "CVE entries include advisory_source: NVD | eagle-scout | literature"
+
+  - id: C-009-008
+    rule: "All embeddings must use nomic-embed-text on cluster Ollama — no external embedding API"
+    enforcement: HARD
+    check: "embedding calls target OLLAMA_ENDPOINT with model nomic-embed-text"
+
+  - id: C-009-009
+    rule: "refexplorer Python worker runs as a k3s Job, not inline in AIANA's request path"
+    enforcement: HARD
+    check: "worker is a Kubernetes Job spec, not a long-running subprocess in AIANA"
+
+  - id: C-009-010
+    rule: "Backward knowledge (mission outcomes) must be indexed within 60s of MISSION_LANDED"
+    enforcement: SOFT
+    check: "Python worker Job triggered by CAPCOM signal with < 60s delay"
+
+new_qdrant_collection:
+  name: domain_knowledge
+  schema:
+    - field: entry_id
+    - field: title
+    - field: abstract
+    - field: domain_tags
+    - field: score
+    - field: source          # semantic_scholar | openAlex | crossref | operator | eagle-scout | NVD
+    - field: advisory_source # NVD | eagle-scout | literature (CVE entries only)
+    - field: operator_annotations  # append-only array
+    - field: mission_refs    # mission IDs that referenced or produced this entry
+    - field: created_at
+    - field: updated_at
+
+capcom_synthesis_outputs:
+  description: |
+    Phase 2 expansion — CAPCOM calls AIANA post-land to produce:
+  outputs:
+    - blog_post: "Mission narrative + field knowledge — queued for FABRIC/SOCIAL"
+    - readme: "Generated from step-plan + repo surfaces + integration map"
+    - security_report: "SECINSP signals + eagle-scout CVE data + NVD cross-reference"
+    - architecture_brief: "ARCH + PRB-ADR signals + domain knowledge influence diagram"
+    - pr_description: "Step-plan citing ADRs that governed each decision"
+
+new_cli_command:
+  name: "taem knowledge"
+  description: "Call AIANA with domain knowledge intent — pre-warm or query the knowledge layer"
+  flags:
+    - "--task TEXT     Integration task description (required)"
+    - "--output TYPE   summary | process | diagram | code | cve | all (default: all)"
+    - "--domain TAG    Override domain classification"
+    - "--force         Bypass Redis cache, re-run refexplorer worker"
+    - "--annotate      Enter operator annotation mode after synthesis"
+  behavior: |
+    Calls AIANA HTTP endpoint with knowledge intent.
+    AIANA checks Redis cache first. On miss, triggers refexplorer k3s Job.
+    Job runs co-citation graph, scores candidates, embeds with nomic-embed-text.
+    Results written to domain_knowledge Qdrant collection.
+    AIANA returns synthesis to taem knowledge CLI for terminal output.
+    Does not require an active mission or TAEM_MC_STATE_PATH.
+
+graduation_sequence:
+  phase_1:
+    status: COMPLETE
+    completed: "2026-03-18"
+    description: "TAEM kernel operational — missions LAND"
+
+  phase_2:
+    status: COMPLETE
+    completed: "2026-03-19"
+    description: |
+      AIANA gets domain_knowledge collection.
+      refexplorer Python worker scaffolded as k3s Job.
+      PRB-SKP gets real lessons_learned from backward knowledge.
+      PRB-ADR gets real constraint semantics from domain_knowledge.
+    artifacts:
+      - "domain_knowledge Qdrant collection (768-dim, Cosine, 7 payload indexes)"
+      - "TAEM-DEV/refexplorer repo (refexplorer.py, Dockerfile, job.yaml)"
+      - "ghcr.io/taem-dev/refexplorer:latest (amd64)"
+      - "TAEM-DEV/ecosystem PR #3 — domain_knowledge handler + auth"
+      - "TAEM-DEV/taem PR #15 — ecosystem client + PRB-SKP/PRB-ADR wiring"
+    open_items:
+      - "NAV Redis warm cache — requires Redis client in ecosystem Go service (performance optimization, not blocking)"
+
+  phase_3:
+    status: COMPLETE
+    completed: "2026-03-19"
+    description: |
+      CAPCOM triggers synthesis post-land.
+      Blog posts, READMEs, security reports auto-generated on mission complete.
+      taem knowledge CLI command live and functional.
+    artifacts:
+      - "TAEM-DEV/taem PR #17 — taem knowledge CLI + CAPCOM synthesis + lessons_learned"
+      - "5 synthesis templates: blog-draft, readme, security-report, architecture-brief, pr-description"
+      - "kernel close() indexes lessons_learned to ecosystem"
+    open_items:
+      - "taem knowledge --annotate deferred to operator workflow design"
+      - "LLM-enhanced synthesis (beyond templates) deferred to future iteration"
+
+  phase_4:
+    status: COMPLETE
+    completed: "2026-03-19"
+    description: |
+      Any project in git-fabric runs taem launch and gets a complete
+      technical brief on completion. Security reports filed automatically.
+      Blog content drafted and queued for FABRIC/SOCIAL via PAO.
+    artifacts:
+      - "TAEM-DEV/taem PR #16 — PAO dispatch enrichment + signal summary + synthesis artifacts"
+      - "TAEM-DEV/mc-state commit 325760c — PAO workflow with synthesis payload"
+      - "docs/knowledge-pipeline.md — full pipeline documentation"
+    open_items: []
