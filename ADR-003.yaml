@@ -120,6 +120,23 @@ constraints:
     violation: WARN
     adr: ADR-003
 
+  - id: C-003-007
+    type: ADVISORY
+    scope: mission-type-context
+    rule: >
+      Mission type (review vs implement) must be propagated to all PRB
+      controllers as part of their evaluation input. PRB agents must
+      adjust their assessment based on mission type — a review mission
+      has no step plan and must not be flagged as a failure for having
+      an empty one. Missions that omit the type field default to
+      "implement" for backward compatibility.
+    check: |
+      signals
+        .filter(s => s.controller.startswith('PRB'))
+        .all(s => s.input.mission_type != null)
+    violation: LOG
+    adr: ADR-003
+
 rationale: |
   The NASA Mission Control model was adopted because it solves the exact
   same problem at a different scale: how do you make a complex, multi-domain

@@ -32,7 +32,8 @@ decision: |
   4 controllers require INFERENCE (PRB-Skeptic, PRB-Correctness,
   PRB-ADR-Audit, SECINSP). Inference controllers attempt Ollama first
   at a 0.85 confidence threshold, falling back to Anthropic only if
-  Ollama returns low confidence or times out at 45 seconds.
+  Ollama returns low confidence or times out at 300 seconds.
+  Model selection and migration are governed by ADR-008.
 
   A complete TAEM mission can clear Phases 00–03 with zero LLM calls.
 
@@ -110,14 +111,15 @@ constraints:
     type: SOFT
     scope: inference-timeout
     rule: >
-      Inference controller Ollama timeout is 45 seconds by default.
+      Inference controller Ollama timeout is 300 seconds by default.
       Per-controller overrides in controllers.yaml are permitted but
-      must include a rationale comment. Never reduce below 20 seconds
-      for PRB agents.
+      must include a rationale comment. Never reduce below 60 seconds
+      for PRB agents (qwen2.5-coder:7b requires more headroom than
+      smaller models).
     check: |
       controllers.yaml
         .filter(c => c.mode == 'inference')
-        .filter(c => c.timeout_s != null AND c.timeout_s < 20)
+        .filter(c => c.timeout_s != null AND c.timeout_s < 60)
         .count() == 0
     violation: WARN
     adr: ADR-005
@@ -159,9 +161,9 @@ controller_classifications:
     - PAO      # Not an assessment controller — no mode classification
 
 inference_config:
-  ollama_model: "llama3.2"
+  ollama_model: "qwen2.5-coder:7b"
   confidence_threshold: 0.85
-  timeout_s: 45
+  timeout_s: 300
   fallback: "anthropic"
   anthropic_model: "claude-sonnet-4-6"
 
