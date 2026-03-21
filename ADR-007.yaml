@@ -140,6 +140,24 @@ constraints:
     violation: WARN
     adr: ADR-007
 
+  - id: C-007-007
+    type: HARD
+    scope: deployment
+    rule: >
+      The TAEM ecosystem services run exclusively on k3s (Proxmox) in the
+      taem namespace. Docker images are built by GitHub Actions CI/CD on
+      push to main, pushed to ghcr.io, and deployed to k3s via kubectl.
+      Images are NEVER built locally on developer machines. The Mac is for
+      writing code only. The kernel binary itself runs locally, but any
+      supporting services (ecosystem Qdrant, state sync) are k3s-hosted.
+    check: |
+      ecosystem.deployment.target == 'k3s' AND
+      ecosystem.deployment.namespace == 'taem' AND
+      deployment.image.registry == 'ghcr.io' AND
+      deployment.builder == 'github_actions'
+    violation: NO-GO
+    adr: ADR-007
+
 # ── Kernel Architecture ───────────────────────────────────────────────────────
 kernel_architecture:
 
