@@ -55,3 +55,8 @@ constraints:
 | [taem](https://github.com/TAEM-DEV/taem) | Kernel — ARCH controller reads this corpus |
 | [ecosystem](https://github.com/TAEM-DEV/ecosystem) | Stores constraints in `constraint_index` collection |
 | [mc-state](https://github.com/TAEM-DEV/mc-state) | Mission state — signals reference constraint IDs |
+
+<!-- org-footer -->
+---
+
+<p align="center"><sub>Part of <a href="https://github.com/TAEM-DEV">TAEM</a> · mission control preflight for software integration · built by <a href="https://github.com/ry-ops">ry-ops</a></sub></p>
